@@ -1,0 +1,12 @@
+name: findec_defi
+default_ecosystem: fantom
+
+fantom:
+  default_network: opera
+  
+geth:
+  fantom:
+    testnet:
+      uri: https://nd-563-640-816.p2pify.com/93be83cbb6bd3148c495173928a336e9
+    opera:
+      uri: https://nd-920-742-171.p2pify.com/58c87ace03e6b9c8daac72c5c224ae93
