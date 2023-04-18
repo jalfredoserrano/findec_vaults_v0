@@ -149,11 +149,11 @@ def update_exposure(c:float, d: float, l:float, te: float, tcr: float, swapfee: 
     if _token1 > _token2:
         _swap_qty = (_token1 - _token2)/2
         _token1 -= _swap_qty
-        _token2 += _swap_qty*(1+swapfee)
+        _token2 += _swap_qty*(1-swapfee)
     elif _token2 > _token1:
         _swap_qty = (_token2 - _token1)/2
         _token2 -= _swap_qty
-        _token1 += _swap_qty*(1+swapfee)        
+        _token1 += _swap_qty*(1-swapfee)        
     l_fnl = _token1 + _token2
     
     return c_fnl, d_fnl, l_fnl, _c, _d, _l
@@ -475,6 +475,28 @@ class SimulateStrat:
         else:
             plt.savefig('cr_and_exposure.png')
  
+    def plot_te_with_price_levels(self, price_ranges, save_fig: bool = False):
+        df = self.simdf
+
+        fig, ax = plt.subplots()
+        fig.set_size_inches(20,10)
+        
+        ax.plot('index', 'Target Exposure', data=df, color='black', label='te' )
+        ax.legend(loc = 'lower right')
+        ax.set_ylabel('Target Exposure')
+        
+        ax2 = ax.twinx()
+        ax2.plot('index', 'Price', data=df, label='Price', color='red')      
+        ax2.legend(loc = 'lower left')  
+        ax2.set_ylabel('FTM Price')
+        
+        for k, v in price_ranges.items():
+            ax2.axhline(y=k, color='purple', linestyle = '--')
+        
+        if save_fig ==  False:
+            plt.show()    
+        else:
+            plt.savefig('cr_and_exposure.png')
     
 
 
