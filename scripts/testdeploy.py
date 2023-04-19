@@ -12,7 +12,7 @@ usdc = '0x04068DA6C83AFCFA0e13ba15A6696662335D5B75'
 
 def main():
     # Deploy vault
-    vlt = project.ERC4626DynamicHedgingVault.deploy(usdc, sender=dev, gas_limit=gas_limit, gas_price=gas_price) 
+    vlt = project.TestERC4626.deploy(usdc, sender=dev, gas_limit=gas_limit, gas_price=gas_price) 
     
     print('Address: {}'.format(vlt.address))
     

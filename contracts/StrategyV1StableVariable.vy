@@ -95,6 +95,12 @@ event ExposureRebalance:
     initial_balance: uint256
     final_balance: uint256  
 
+event ExposureUpdate:
+    sender: indexed(address)
+    exposure: decimal
+    initial_balance: uint256
+    final_balance: uint256  
+
 enum Contracts:
     ROUTER
     LENDINGPOOL
@@ -121,9 +127,11 @@ secondaryRewardstoTokenSwapPath: public(DynArray[address, 3])
 initialized: public(bool)
 stratName: public(String[40])
 targetCollatRatio: public(decimal)
+minCollatRatio: public(decimal)
 maxCollatRatio: public(decimal)
 maxAllowedCollatRatio: public(decimal)
-priceExposure: public(decimal)
+exposureThresh: public(decimal)
+targetExposure: public(decimal)
 shortAllowedExposure: public(decimal)
 longAllowedExposure: public(decimal)
 slippage: public(uint256)
@@ -153,7 +161,7 @@ _path_stable_to_variable: public(DynArray[address, 3])
 _path_reward_to_stable: public(DynArray[address, 3])
 
 @external
-def __init__(_strat_name: String[40], _vault: address, _lendingvault: address, _stable_token: address, _variable_token: address, _a_token: address, _debt_token: address, _reward_token: address, _tcr: decimal, _maxcr: decimal, _maxallowedcr: decimal, _exposure: decimal, _maxshortexposure: decimal, _maxlongexposure: decimal):
+def __init__(_strat_name: String[40], _vault: address, _lendingvault: address, _stable_token: address, _variable_token: address, _a_token: address, _debt_token: address, _reward_token: address, _tcr: decimal, _mincr: decimal, _maxcr: decimal, _maxallowedcr: decimal, _exposure: decimal, _ethresh: decimal, _maxshortexposure: decimal, _maxlongexposure: decimal):
     self.stratName = _strat_name
 
     # Set admin and roles
@@ -171,9 +179,11 @@ def __init__(_strat_name: String[40], _vault: address, _lendingvault: address, _
 
     # Set params
     self.targetCollatRatio = _tcr
+    self.minCollatRatio = _mincr
     self.maxCollatRatio = _maxcr
     self.maxAllowedCollatRatio = _maxallowedcr
-    self.priceExposure = _exposure
+    self.targetExposure = _exposure
+    self.exposureThresh = _ethresh
     self.shortAllowedExposure = _maxshortexposure
     self.longAllowedExposure = _maxlongexposure
     self.slippage = 9950
@@ -249,13 +259,11 @@ def deployIdle():
 def _rebalance_collateral():
     """
     Function executes rebalance collateral logic.
-
-    NOTE: '_a' is positive if: collat ratio > target collat ratio because d > tcr*c. 
-        Then only time '_a' can be negative is inside the withdrawal function.
     """
     cr: decimal = self._getCollateralRatio()
     tcr: decimal = self.targetCollatRatio
-    if cr > tcr+0.02 or cr < tcr-0.02:
+
+    if cr > tcr+0.01 or cr < tcr-0.01:
         # Determine amount to remove from lp ('_a': half of the lp amount to remove)
         _d: decimal = convert(self._getDebtBalance(), decimal)
         _c: decimal = convert(self._getCollateralBalance(), decimal)
@@ -264,8 +272,8 @@ def _rebalance_collateral():
         # Go through normal logic. Reducing collateral raito to target.
         if _a >= 0.0:
             # Determine liquidity amount to remove
-            _lp: decimal = convert(self._getLpBalance(True), decimal)
-            _a_as_perc_of_lp: decimal = _two*_a/_lp
+            _l: decimal = convert(self._getLpBalance(True), decimal)
+            _a_as_perc_of_lp: decimal = _two*_a/_l
             self._withdraw_lp_by_perc(_a_as_perc_of_lp)
 
             # Repay debt and add to collateral
@@ -287,28 +295,147 @@ def _rebalance_collateral():
 
 @external
 def rebalance_collateral():
-    """
-    Function rebalances collateral ratio to target value.
-    Prioritizes adding idle assets as collateral.
-    If collateral still needs rebalancing, then withdraw from farm, repay and deposit collateral.
-    """
     assert self.initialized == True, "!initialized"
     assert self.strategists[msg.sender]==True or self.keepers[msg.sender]==True, "!strategist"
     _initial_cr: decimal = self._getCollateralRatio()
-    assert _initial_cr > self.maxCollatRatio, "Collateral Ratio within valid range"
+    assert _initial_cr > self.maxCollatRatio or _initial_cr < self.minCollatRatio, "Collateral Ratio within valid range"
 
+    # Deploy idle assets
+    self._deployIdle()
+
+    # Rebalance
     _initial_balance: uint256 = self._totalBalance()
-
-    # Prioritize adding collateral
-    self._prioritizeCollateral()
-
-    # Check if collateral still needs rebalancing
-    if self._getCollateralRatio() > self.targetCollatRatio+0.02:
-        self._rebalance_collateral()
-
+    self._rebalance_collateral()
     _final_balance: uint256 = self._totalBalance()
 
     log CollateralRebalance(msg.sender, _initial_cr, _initial_balance, _final_balance)
+
+@internal
+def _rebalance_exposure():
+    te: decimal = self.targetExposure
+    e: decimal = self._getExposure()
+    
+    if abs(e - te) > 0.005:
+        # Determine amount to remove from lp and repay debt _a
+        _t: decimal = convert(self._deployedBalance(), decimal)
+        _l: decimal = convert(self._getLpBalance(True), decimal)
+        _d: decimal = convert(self._getDebtBalance(), decimal)
+        _a: decimal =_two*(te*_t - 0.5*_l + _d)
+
+        # if _a is positive, remove from lp and repay debt
+        if _a > 0:
+            # Determine liquidity to remove
+            _a_as_perc_of_lp: decimal = _two*_a/_l
+            self._withdraw_lp_by_perc(_a_as_perc_of_lp)
+
+            # Swap and repay debt
+            _s_bal: uint256 = self.stableERC.balanceOf(self)
+            self._swap_to_variable(_s_bal)
+            _v_bal: uint256 = self.variableERC.balanceOf(self)
+            self._repay(_v_bal)
+
+        # if _a is negative, we borrow and add to lp
+        else:
+            # Borrow
+            _b: uint256 = self._stableToVariable(convert(_a, uint256))
+            self._borrow(_b)
+
+            # Add to lp
+            self._split5050andAddLiquidity()
+
+@external
+def rebalance_exposure():
+    assert self.initialized == True, "!initialized"
+    assert self.strategists[msg.sender]==True or self.keepers[msg.sender]==True, "!strategist"
+
+    e: decimal = self._getExposure()
+    te: decimal = self.targetExposure
+    e_thresh: decimal = self.exposureThresh
+    assert abs(e - te) > e_thresh, "Exposure within valid range"
+    
+    # Deploy idle assets
+    self._deployIdle()
+
+    # Rebalance exposure
+    _initial_balance: uint256 = self._totalBalance()
+    self._rebalance_exposure()
+    _final_balance: uint256 = self._totalBalance()
+
+    # Rebalance collateral if its above target
+    cr: decimal = self._getCollateralRatio()
+    tcr: decimal = self.targetCollatRatio
+    if cr > tcr+0.02:
+        self._rebalance_collateral()
+
+    log ExposureRebalance(msg.sender, e, _initial_balance, _final_balance)  
+
+@external
+def update_exposure(_new_exposure: decimal):
+    """
+    Function rebalanes strategy state given a new price exposure.
+    All liquidity is removed from the AMM. 
+    Only the required amount is swapped to minimize slippage.
+
+    NOTE: look into ways of rebalancing without withdrawing all liquidity. Not possible for all cases, but may be possible for most.
+    """
+    assert self.initialized == True, "!initialized"
+    assert self.strategists[msg.sender] == True, "!strategist"
+    if _new_exposure != self.targetExposure:
+        assert self.shortAllowedExposure < _new_exposure, "exposure too low"
+        assert self.longAllowedExposure > _new_exposure, "exposure too high"
+        self.targetExposure = _new_exposure
+
+    # Get current and new state
+    _I: uint256 = self._totalBalance()
+    _c_new: uint256 = 0
+    _d_new: uint256 = 0
+    _lp_new: uint256 = 0
+    _c_new, _d_new, _lp_new = self._asset_allocation(_I)
+    _c_current: uint256 = self._getCollateralBalance()
+    _d_current: uint256 = self._getDebtBalance()
+    _lp_current: uint256 = self._getLpBalance(True)
+
+    # Remove all liquidity
+    self._withdraw_lp_by_perc(1.0)
+
+    # Check if collateral needs to be added
+    if _c_new > _c_current:
+        _c_to_add: uint256 = _c_new - _c_current
+        _c_balance: uint256 = self.stableERC.balanceOf(self)
+        if _c_balance >= _c_to_add:
+            self._add_collateral(_c_to_add)
+        else:
+            _c_missing: uint256 = _c_to_add - _c_balance
+            self._swap_to_stable(self._stableToVariable(_c_missing))  
+            self._add_collateral(self.stableERC.balanceOf(self))
+
+    # Check if debt must be repaid
+    if _d_new < _d_current:
+        _d_required: uint256 = self._stableToVariable(_d_current-_d_new)
+        _d_balance: uint256 = self.variableERC.balanceOf(self)
+        if _d_balance >= _d_required:
+            self._repay(_d_required)
+        else:
+            _d_missing: uint256 = _d_required - _d_balance
+            self._swap_to_variable(self._variableToStable(_d_missing))
+            self._repay(self.variableERC.balanceOf(self))
+
+    # Check if collateral needs to be removed
+    if _c_new < _c_current:
+        _c_to_remove: uint256 = _c_current - _c_new
+        self._remove_collateral(_c_to_remove)
+
+    # Check if need to borrow
+    if _d_new > _d_current:
+        _d_to_borrow: uint256 = self._stableToVariable(_d_new-_d_current)
+        self._borrow(_d_to_borrow)
+
+    # Add liquidity
+    self._split5050andAddLiquidity()
+
+    _final_balance: uint256 = self._totalBalance()
+
+    log ExposureUpdate(msg.sender, _new_exposure, _I, _final_balance)
 
 @external
 def withdraw(_assets: uint256):
@@ -319,7 +446,7 @@ def withdraw(_assets: uint256):
         Only remove collateral if enough to satisfy withdrawal.
     If not enough,
         Rebalance collateral.
-        Get remaining amount to withdraw as percentage of deployed balance.
+        Get remaining amount to withdraw as percentage of total balance.
         Remove from AMM = lp * withdrawal percentage.
         Repay = debt * withdrawal percentage.
         Remove from collateral = collateral * withdrawal percentage.
@@ -338,20 +465,25 @@ def withdraw(_assets: uint256):
     else:
         _remaining_to_withdraw = _assets - _idle_balance
         
-        
     # Withdraw from excess collateral
     if _remaining_to_withdraw > 0:
         if self._getCollateralRatio() < self.targetCollatRatio:
             _c: decimal = convert(self._getCollateralBalance(), decimal)
             _d: decimal = convert(self._getDebtBalance(), decimal)
             _c_to_remove: uint256 = convert(_c - (_d/self.targetCollatRatio), uint256)
-            if _c_to_remove >= _assets:
-                self._remove_collateral(_assets)
-                self.stableERC.transfer(self.vault, _assets)
+            if _c_to_remove >= _remaining_to_withdraw:
+                self._remove_collateral(_remaining_to_withdraw)
+                _idle_assets: uint256 = self.stableERC.balanceOf(self)
+                self.stableERC.transfer(self.vault, _idle_assets)
                 _remaining_to_withdraw = 0
 
     # Withdraw remaining amount
     if _remaining_to_withdraw > 0:
+        # Send current idle balance to vault
+        if _idle_balance > 0:
+            self.stableERC.transfer(self.vault, _idle_balance)
+            _assets -= _idle_balance
+
         # Rebalance collateral
         self._rebalance_collateral()
         _total_balance: uint256 = self._totalBalance()
@@ -382,7 +514,6 @@ def withdraw(_assets: uint256):
         # Transfer all idle assets to vault
         _idle_assets: uint256 = self.stableERC.balanceOf(self)
         self.stableERC.transfer(self.vault, _idle_assets)
-
 
 @external
 def harvest():
@@ -445,76 +576,6 @@ def harvest_aave(_assets: DynArray[address, 5]):
     for a in _assets:
         _qty: uint256 = IERC20(a).balanceOf(self)
         IERC20(a).transfer(msg.sender, _qty)
-
-@external
-def rebalance_exposure(_new_exposure: decimal):
-    """
-    Function rebalanes strategy state given a new price exposure.
-    All liquidity is removed from the AMM. 
-    Only the required amount is swapped to minimize slippage.
-
-    NOTE: look into ways of rebalancing without withdrawing all liquidity. Not possible for all cases, but may be possible for most.
-    """
-    assert self.initialized == True, "!initialized"
-    assert self.strategists[msg.sender] == True, "!strategist"
-    if _new_exposure != self.priceExposure:
-        assert self.shortAllowedExposure < _new_exposure, "exposure too low"
-        assert self.longAllowedExposure > _new_exposure, "exposure too high"
-        self.priceExposure = _new_exposure
-
-    # Get current and new state
-    _I: uint256 = self._totalBalance()
-    _c_new: uint256 = 0
-    _d_new: uint256 = 0
-    _lp_new: uint256 = 0
-    _c_new, _d_new, _lp_new = self._asset_allocation(_I)
-    _c_current: uint256 = self._getCollateralBalance()
-    _d_current: uint256 = self._getDebtBalance()
-    _lp_current: uint256 = self._getLpBalance(True)
-
-    # Remove all liquidity
-    self._withdraw_lp_by_perc(1.0)
-
-    # Check if collateral needs to be added
-    if _c_new > _c_current:
-        _c_to_add: uint256 = _c_new - _c_current
-        _c_balance: uint256 = self.stableERC.balanceOf(self)
-        if _c_balance >= _c_to_add:
-            self._add_collateral(_c_to_add)
-        else:
-            _c_missing: uint256 = _c_to_add - _c_balance
-            self._swap_to_stable(self._stableToVariable(_c_missing))  
-            self._add_collateral(self.stableERC.balanceOf(self))
-
-    # Check if debt must be repaid
-    if _d_new < _d_current:
-        _d_required: uint256 = self._stableToVariable(_d_current-_d_new)
-        _d_balance: uint256 = self.variableERC.balanceOf(self)
-        if _d_balance >= _d_required:
-            self._repay(_d_required)
-        else:
-            _d_missing: uint256 = _d_required - _d_balance
-            self._swap_to_variable(self._variableToStable(_d_missing))
-            self._repay(self.variableERC.balanceOf(self))
-
-    # Check if collateral needs to be removed
-    if _c_new < _c_current:
-        _c_to_remove: uint256 = _c_current - _c_new
-        self._remove_collateral(_c_to_remove)
-
-    # Check if need to borrow
-    if _d_new > _d_current:
-        _d_to_borrow: uint256 = self._stableToVariable(_d_new-_d_current)
-        self._borrow(_d_to_borrow)
-
-    # Add liquidity
-    self._split5050andAddLiquidity()
-
-    _final_balance: uint256 = self._totalBalance()
-
-    log ExposureRebalance(msg.sender, _new_exposure, _I, _final_balance)
-
-
 
 ######################################
 #               VIEWERS 
@@ -616,6 +677,26 @@ def _getCollateralRatio() -> decimal:
 @view
 def getCollateralRatio() -> decimal:
     return self._getCollateralRatio()
+
+@internal
+@view
+def _getExposure() -> decimal:
+    """
+    Returns the current exposure.
+    """
+    return (0.5*convert(self._getLpBalance(True), decimal)-self._getDebtBalance())/convert(self._deployedBalance(), decimal)
+
+@external
+@view
+def getExposure() -> decimal:
+    return self._getExposure()
+
+@external
+@view
+def getState() -> (decimal, decimal):
+    _cr: decimal = self._getCollateralRatio()
+    _e: decimal = self._getExposure()
+    return (_cr, _e)
 
 @internal
 @view
@@ -760,7 +841,7 @@ def _asset_allocation(_I: uint256) -> (uint256, uint256, uint256):
     
     _i: decimal = convert(_I, decimal)
     _tcr: decimal = self.targetCollatRatio
-    _e: decimal = self.priceExposure*_i
+    _e: decimal = self.targetExposure*_i
     
     # Determine collateral, debt and lp allocations
     _c: decimal = (_i - _two*_e)/(_one + _tcr)
@@ -1156,7 +1237,7 @@ def set_exposure(_exposure: decimal):
     assert self.strategists[msg.sender] == True, "!strategist"
     assert self.shortAllowedExposure < _exposure, "exposure too low"
     assert self.longAllowedExposure > _exposure, "exposure too high"
-    self.priceExposure = _exposure
+    self.targetExposure = _exposure
 
 @external
 def set_max_allowed_exposure(_shortexposure: decimal, _longexposure: decimal):
