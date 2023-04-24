@@ -101,6 +101,11 @@ event ExposureUpdate:
     initial_balance: uint256
     final_balance: uint256  
 
+event Withdraw:
+    sender: indexed(address)
+    amount: uint256
+    withdraw_type: String[10]
+
 enum Contracts:
     ROUTER
     LENDINGPOOL
@@ -250,7 +255,6 @@ def _deployIdle():
         if _variable_bal > 0:
             self._repay(_variable_bal)
 
-
 @external
 def deployIdle():
     self._deployIdle()
@@ -315,7 +319,8 @@ def _rebalance_exposure():
     te: decimal = self.targetExposure
     e: decimal = self._getExposure()
     
-    if abs(e - te) > 0.005:
+    _exposure_abs: decimal = self._decimal_abs(te, e)
+    if _exposure_abs > 0.005:
         # Determine amount to remove from lp and repay debt _a
         _t: decimal = convert(self._deployedBalance(), decimal)
         _l: decimal = convert(self._getLpBalance(True), decimal)
@@ -323,7 +328,7 @@ def _rebalance_exposure():
         _a: decimal =_two*(te*_t - 0.5*_l + _d)
 
         # if _a is positive, remove from lp and repay debt
-        if _a > 0:
+        if _a > 0.0:
             # Determine liquidity to remove
             _a_as_perc_of_lp: decimal = _two*_a/_l
             self._withdraw_lp_by_perc(_a_as_perc_of_lp)
@@ -351,7 +356,8 @@ def rebalance_exposure():
     e: decimal = self._getExposure()
     te: decimal = self.targetExposure
     e_thresh: decimal = self.exposureThresh
-    assert abs(e - te) > e_thresh, "Exposure within valid range"
+    _exposure_abs: decimal = self._decimal_abs(te, e)
+    assert _exposure_abs > e_thresh, "Exposure within valid range"
     
     # Deploy idle assets
     self._deployIdle()
@@ -389,11 +395,10 @@ def update_exposure(_new_exposure: decimal):
     _I: uint256 = self._totalBalance()
     _c_new: uint256 = 0
     _d_new: uint256 = 0
-    _lp_new: uint256 = 0
-    _c_new, _d_new, _lp_new = self._asset_allocation(_I)
+    _l_new: uint256 = 0
+    _c_new, _d_new, _l_new = self._asset_allocation(_I)
     _c_current: uint256 = self._getCollateralBalance()
     _d_current: uint256 = self._getDebtBalance()
-    _lp_current: uint256 = self._getLpBalance(True)
 
     # Remove all liquidity
     self._withdraw_lp_by_perc(1.0)
@@ -442,78 +447,83 @@ def withdraw(_assets: uint256):
     """
     Withdraws from strategy.
     First tries to satisfy withdrawal using idle assets.
-    If not enough, try to satisfy withdrawal by removing excess collateral.
-        Only remove collateral if enough to satisfy withdrawal.
-    If not enough,
-        Rebalance collateral.
-        Get remaining amount to withdraw as percentage of total balance.
-        Remove from AMM = lp * withdrawal percentage.
-        Repay = debt * withdrawal percentage.
-        Remove from collateral = collateral * withdrawal percentage.
-
-    NOTE: we rebalance collateral to simplify the withdrawal process. This is because strategy can be at various different states.
+    If not enough balance to satisfy withdrawal, go through withdrawal logic.
+        Simulate removing needed quantity from lp, repaying 50% and removing the same 50% from collateral
+        Ensure the exposure and collateral ratio are within the defined range
+        Rebalance if necessary
+        Withdraw
     """
     assert self.initialized == True, "!initialized"
     assert self.vault == msg.sender or self.owner == msg.sender, "!vault"
     
+    # Define key variables
     _remaining_to_withdraw: uint256 = 0
+    _type: String[10] = ''
+    _withdraw_amt: uint256 = 0
+
+    # Define initial state
+    c: uint256 = self._getCollateralBalance()
+    d: uint256 = self._getDebtBalance()
+    l: uint256 = self._getLpBalance(True)
 
     # Withdraw from idle assets
     _idle_balance: uint256 = self.stableERC.balanceOf(self)
     if _idle_balance >= _assets:
         self.stableERC.transfer(self.vault, _assets)
-    else:
-        _remaining_to_withdraw = _assets - _idle_balance
+        _withdraw_amt = _assets
+        _type = 'idle'
         
-    # Withdraw from excess collateral
-    if _remaining_to_withdraw > 0:
-        if self._getCollateralRatio() < self.targetCollatRatio:
-            _c: decimal = convert(self._getCollateralBalance(), decimal)
-            _d: decimal = convert(self._getDebtBalance(), decimal)
-            _c_to_remove: uint256 = convert(_c - (_d/self.targetCollatRatio), uint256)
-            if _c_to_remove >= _remaining_to_withdraw:
-                self._remove_collateral(_remaining_to_withdraw)
-                _idle_assets: uint256 = self.stableERC.balanceOf(self)
-                self.stableERC.transfer(self.vault, _idle_assets)
-                _remaining_to_withdraw = 0
+    # Check if amount to withdraw is greater than assets in lp
+    elif l < _assets:
+        raise "amount to withdraw can't be less than lp balance"
 
-    # Withdraw remaining amount
-    if _remaining_to_withdraw > 0:
-        # Send current idle balance to vault
-        if _idle_balance > 0:
-            self.stableERC.transfer(self.vault, _idle_balance)
-            _assets -= _idle_balance
+    else:
+        # Get remaining amount to withdraw
+        _remaining_to_withdraw = _assets - _idle_balance
 
-        # Rebalance collateral
-        self._rebalance_collateral()
-        _total_balance: uint256 = self._totalBalance()
-        _withdraw_percentage: decimal = convert(_assets, decimal)/convert(_total_balance, decimal)
+        # Simulate simple withdraw  
+        # Check if withdrawing from lp keeps te and cr within valid range
+        _c: uint256 = c - _remaining_to_withdraw/2
+        _d: uint256 = d - _remaining_to_withdraw/2
+        _l: uint256 = l - _remaining_to_withdraw
+        
+        # Estimate collateral ratio and exposure
+        _cr: decimal = convert(_d, decimal)/convert(_c, decimal)
+        _e: decimal = (0.5*convert(_l, decimal)-convert(_d, decimal))/convert(_c-_d+_l, decimal)
+        _e_diff: decimal = self._decimal_abs(self.targetExposure, _e)
+
+        # Rebalance exposure if necessary
+        if _e_diff > self.exposureThresh:
+            self._rebalance_exposure()
+            _type = 'normal e'
+
+        elif self.minCollatRatio > _cr or self.maxCollatRatio < _cr:
+            self._rebalance_collateral()
+            _type = 'normal cr'
+
+        else:
+            _type = 'normal'
+
+        # Get amount to withdraw from lp as percentage
+        _withdraw_percentage: decimal = convert(_remaining_to_withdraw, decimal)/convert(l, decimal)
 
         # Remove from AMM
         self._withdraw_lp_by_perc(_withdraw_percentage)
 
         # Repay
-        _repay_amount: uint256 = convert(_withdraw_percentage*convert(self._getDebtBalance(), decimal), uint256)
-        _repay_in_variable: uint256 = self._stableToVariable(_repay_amount)
-        _variable_balance: uint256 = self.variableERC.balanceOf(self)
-        if _repay_in_variable > _variable_balance:
-            self._swap_to_variable(_repay_in_variable - _variable_balance)
-            self._repay(self.variableERC.balanceOf(self))
-        else:
-            self._repay(_repay_in_variable)
+        _var_bal: uint256 = self.variableERC.balanceOf(self)
+        self._repay(_var_bal)
 
         # Remove collateral
-        _c_remove_amount: uint256 = convert(_withdraw_percentage*convert(self._getCollateralBalance(), decimal), uint256)
-        self._remove_collateral(_c_remove_amount)
+        _collateral_to_remove: uint256 = self._variableToStable(_var_bal)
+        self._remove_collateral(_collateral_to_remove)
 
-        # Swap remaining variable tokens to stable
-        _variable_balance_1: uint256 = self.variableERC.balanceOf(self)
-        if _variable_balance_1 > 0:
-            self._swap_to_stable(_variable_balance_1)
-
-        # Transfer all idle assets to vault
-        _idle_assets: uint256 = self.stableERC.balanceOf(self)
-        self.stableERC.transfer(self.vault, _idle_assets)
+        # Transfer
+        _withdraw_amt = self.stableERC.balanceOf(self)
+        self.stableERC.transfer(self.vault, _withdraw_amt)
+        
+    log Withdraw(msg.sender, _withdraw_amt, _type)
+    
 
 @external
 def harvest():
@@ -684,19 +694,12 @@ def _getExposure() -> decimal:
     """
     Returns the current exposure.
     """
-    return (0.5*convert(self._getLpBalance(True), decimal)-self._getDebtBalance())/convert(self._deployedBalance(), decimal)
+    return (0.5*convert(self._getLpBalance(True), decimal)-convert(self._getDebtBalance(), decimal))/convert(self._deployedBalance(), decimal)
 
 @external
 @view
 def getExposure() -> decimal:
     return self._getExposure()
-
-@external
-@view
-def getState() -> (decimal, decimal):
-    _cr: decimal = self._getCollateralRatio()
-    _e: decimal = self._getExposure()
-    return (_cr, _e)
 
 @internal
 @view
@@ -850,10 +853,15 @@ def _asset_allocation(_I: uint256) -> (uint256, uint256, uint256):
 
     return convert(_c, uint256), convert(_d, uint256), convert(_lp, uint256)
 
-@external
-@view
-def asset_allocation(_I: uint256) -> (uint256, uint256, uint256):
-    return self._asset_allocation(_I)
+@internal
+@pure
+def _decimal_abs(a: decimal, b: decimal) -> decimal:
+    _abs: decimal = 0.0
+    if a > b:
+        _abs = a - b
+    else:
+        _abs = b - a
+    return _abs
 
 @internal
 def _swap_to_stable(_qty: uint256):
@@ -895,22 +903,12 @@ def _add_collateral(_c: uint256):
     """
     self.aave_lending_pool.deposit(self.stableToken, _c, self, 0)
 
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def add_collateral(_c: uint256):
-    self._add_collateral(_c)
-
 @internal
 def _borrow(_d: uint256):
     """
     Borrows variable token from Aave.
     """
     self.aave_lending_pool.borrow(self.variableToken, _d, 2, 0, self)
-
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def borrow(_d: uint256):
-    self._borrow(_d)
 
 @internal
 def _lp_deposit(_stable_qty: uint256, _variable_qty: uint256):
@@ -927,11 +925,6 @@ def _lp_deposit(_stable_qty: uint256, _variable_qty: uint256):
     _variable_min: uint256 = _variable_desired*self.slippage*95/(BASE_UNIT*100)
     self.uniswap_router.addLiquidity(self.stableToken, self.variableToken, _stable_desired, _variable_desired, _stable_min, _variable_min, self, _deadline)
 
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def lp_deposit(_stable_qty: uint256, _variable_qty: uint256):
-    self._lp_deposit(_stable_qty, _variable_qty)
-
 @internal
 def _farm_deposit():
     """
@@ -939,11 +932,6 @@ def _farm_deposit():
     """
     _liquidity: uint256 = self.uniswap_pair.balanceOf(self)
     self.masterchef.deposit(self.poolid, _liquidity, self)
-
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def farm_deposit():
-    self._farm_deposit()
 
 @internal
 def _withdraw_lp_by_perc(_lp_perc_to_remove: decimal):
@@ -960,22 +948,12 @@ def _withdraw_lp_by_perc(_lp_perc_to_remove: decimal):
     _liquidity: uint256 = IERC20(self.lpToken).balanceOf(self)
     self._lp_withdraw(_liquidity)
 
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def withdraw_lp_by_perc(_lp_perc_to_remove: decimal):
-    self._withdraw_lp_by_perc(_lp_perc_to_remove)
-
 @internal
 def _farm_withdraw(_amount: uint256):
     """
     Withdraws liquidity from farm.
     """
     self.masterchef.withdraw(self.poolid, _amount, self)
-
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def farm_withdraw(_amount: uint256):
-    self._farm_withdraw(_amount)
 
 @internal
 def _lp_withdraw(_liquidity: uint256):
@@ -992,11 +970,6 @@ def _lp_withdraw(_liquidity: uint256):
     _amount_stable_min = (_amount_stable_min*_liquidity*self.slippage/_liquidity_balance)/BASE_UNIT
     self.uniswap_router.removeLiquidity(self.stableToken, self.variableToken, _liquidity, _amount_stable_min, _amount_variable_min, self, _deadline)
 
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def lp_withdraw(_liquidity: uint256):
-    self._lp_withdraw(_liquidity)
-
 @internal
 def _repay(_r: uint256):
     """
@@ -1004,22 +977,12 @@ def _repay(_r: uint256):
     """
     self.aave_lending_pool.repay(self.variableToken, _r, 2, self)
 
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def repay(_r: uint256):
-    self._repay(_r)
-
 @internal
 def _remove_collateral(_c: uint256):
     """
     Removes collateral.
     """
     self.aave_lending_pool.withdraw(self.stableToken, _c, self)
-
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def remove_collateral(_c: uint256):
-    self._remove_collateral(_c)
 
 @internal
 def _split5050andAddLiquidity():
@@ -1055,11 +1018,6 @@ def _split5050andAddLiquidity():
     _variable_qty: uint256 = self.variableERC.balanceOf(self)
     self._lp_deposit(_stable_qty, _variable_qty)
     self._farm_deposit()
-
-#=======ONLY FOR DEVELOPMENT AND TESTING===========#
-@external
-def split5050andAddLiquidity():
-    self._split5050andAddLiquidity()
 
 ######################################
 #        SECONDARY COLLATERAL 
@@ -1222,10 +1180,12 @@ def set_target_collat_ratio(_tcr: decimal):
     self.targetCollatRatio = _tcr
 
 @external
-def set_max_collat_ratio(_maxcr: decimal):
+def set_collat_ratio_range(_mincr:decimal, _maxcr: decimal):
     assert self.strategists[msg.sender] == True, "!strategist"
-    assert self.maxAllowedCollatRatio > _maxcr, "collateral ratio too high"
+    assert self.maxAllowedCollatRatio > _maxcr, "max collateral ratio too high"
+    assert self.maxAllowedCollatRatio-0.05 > _mincr, "min collateral ratio too high"
     self.maxCollatRatio = _maxcr
+    self.minCollatRatio = _mincr
 
 @external
 def set_max_allowed_collat_ratio(_maxcr: decimal):
@@ -1233,11 +1193,11 @@ def set_max_allowed_collat_ratio(_maxcr: decimal):
     self.maxAllowedCollatRatio = _maxcr
 
 @external
-def set_exposure(_exposure: decimal):
+def set_exposure_threshold(_ethresh: decimal):
     assert self.strategists[msg.sender] == True, "!strategist"
-    assert self.shortAllowedExposure < _exposure, "exposure too low"
-    assert self.longAllowedExposure > _exposure, "exposure too high"
-    self.targetExposure = _exposure
+    assert _ethresh > 0.0, "exposure too low"
+    assert _ethresh < 0.5, "exposure too high"
+    self.exposureThresh = _ethresh
 
 @external
 def set_max_allowed_exposure(_shortexposure: decimal, _longexposure: decimal):

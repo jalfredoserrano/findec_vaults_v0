@@ -85,16 +85,23 @@ def balances(context, account):
 @account_option()
 @click.option('-vlt', '--vault', type=click.Choice(['DYNAMIC','LENDING'], case_sensitive=False), prompt='Select vault', cls=QuestionaryOption)
 @click.option('-a', '--action', type=click.Choice(['DISPLAY','DEPOSIT','WITHDRAW'], case_sensitive=False), prompt='Select Action', cls=QuestionaryOption)
+@click.option('-address', type=click.STRING, default='')
 @gasprice_option()
 @gaslimit_option()
-def vaults(context, account, vault, action, gasprice, gaslimit):
+def vaults(context, account, vault, action, address, gasprice, gaslimit):
     _project = context.project_manager
     _chain = context.chain_manager 
     # Set selected vault
     if vault == 'DYNAMIC':
-        vlt = _chain.contracts.get_deployments(_project.ERC4626DynamicHedgingVault)[-1]
+        if address == '':
+            vlt = _chain.contracts.get_deployments(_project.ERC4626DynamicHedgingVault)[-1]
+        else:
+            vlt = _project.ERC4626LendingVault.at(address)
     elif vault == 'LENDING':
-        vlt = _chain.contracts.get_deployments(_project.ERC4626LendingVault)[-1]
+        if address == '':
+            vlt = _chain.contracts.get_deployments(_project.ERC4626LendingVault)[-1]
+        else:
+            vlt = _project.ERC4626LendingVault.at(address)
     print('\nInteracting with {} vault'.format(vault)+ln_break)   
         
     # Print User Vault Details
@@ -149,14 +156,18 @@ def vaults(context, account, vault, action, gasprice, gaslimit):
 #=====================#  
 @cli.command(cls=NetworkCommand)
 @ape_cli_context()
+@click.option('-address', type=click.STRING, default='')
 @click.option("--info", is_flag=True, show_default=True, help="Display strategy information")
 @click.option("--state", is_flag=True, show_default=True, help="Display strategy positions state")
 @click.option("--params", is_flag=True, show_default=True, help="Display strategy key parameters")
 @click.option("--norm-values", is_flag=True, show_default=True, default=True, help="To display balances normalized by decimals")
-def stratinfo(context, info, state, params, norm_values):
+def stratinfo(context, address, info, state, params, norm_values):
     _project = context.project_manager
     _chain = context.chain_manager 
-    dyn = _chain.contracts.get_deployments(_project.StrategyV1StableVariable)[-1]    
+    if address == '':
+        dyn = _chain.contracts.get_deployments(_project.StrategyV1StableVariable)[-1]
+    else:
+        dyn = _project.StrategyV1StableVariable.at(address)
     
     # Print strategy base info
     print('\nBase Info'+ln_break)
@@ -193,11 +204,14 @@ def stratinfo(context, info, state, params, norm_values):
         print(' -> Total: {:0.4f}'.format(dyn.totalBalance()/_d))
         print(' -> Idle: {:0.4f} , Deployed: {:0.4f}'.format(dyn.getIdleBalance()/_d, dyn.deployedBalance()/_d))
         print(' -> Collateral: {:0.4f} , Debt: {:0.4f} , LP: {:0.4f}'.format(dyn.getCollateralBalance()/_d, dyn.getDebtBalance()/_d, dyn.getLpBalance(True)/_d))
-        print('Collateral Ratio and Exposure State:')
+        print('Collateral Ratio State:')
         print(' -> Target Collateral Ratio: {:0.4f}'.format(dyn.targetCollatRatio()))
-        print(' -> Price Exposure: {:0.2f}'.format(dyn.priceExposure()))
         print(' -> Current Collateral Ratio: {:0.4f}'.format(dyn.getCollateralRatio()))
-        print(' -> Max Collateral Ratio: {:0.4f}'.format(dyn.maxCollatRatio()))
+        print(' -> Min Collateral Ratio: {:0.4f} , Max Collateral Ratio: {:0.4f}'.format(dyn.minCollatRatio(), dyn.maxCollatRatio()))
+        print('Exposure State:')
+        print(' -> Target Exposure: {:0.4f}'.format(dyn.targetExposure()))
+        print(' -> Current Exposure: {:0.4f}'.format(dyn.getExposure()))
+        print(' -> Exposure Threshold: {:0.4f}'.format(dyn.exposureThresh()))
         print('Variable Token Price:')
         print(' -> Chainlink price: {:0.4f}'.format(dyn.get_variable_price(1)))
         print(' -> LP price: {:0.4f}'.format(dyn.get_variable_price(2)))
@@ -218,17 +232,22 @@ def stratinfo(context, info, state, params, norm_values):
 # Interact with Strategy 
 # as Strategist
 #=====================#  
-action_choices = ['DEPLOY_IDLE','REBALANCE_COLLATERAL','HARVEST','REBALANCE_EXPOSURE','SET_TARGET_CR','SET_MAX_CR','SET_EXPOSURE','SET_SLIPPAGE']
+action_choices = ['DEPLOY_IDLE','REBALANCE_COLLATERAL','HARVEST','REBALANCE_EXPOSURE','UPDATE_EXPOSURE',
+                  'SET_TARGET_CR','SET_CR_RANGE','SET_EXPOSURE_THRESHOLD','SET_SLIPPAGE']
 @cli.command(cls=NetworkCommand)
 @ape_cli_context()
 @account_option()
 @click.option('-a', '--action', prompt='Choose Action', type=click.Choice(action_choices, case_sensitive=False), cls=QuestionaryOption)
+@click.option('-address', type=click.STRING, default='')
 @gasprice_option()
 @gaslimit_option()
-def strategist(context, account, action, gasprice, gaslimit):
+def strategist(context, account, action, address, gasprice, gaslimit):
     _project = context.project_manager
     _chain = context.chain_manager 
-    dyn = _chain.contracts.get_deployments(_project.StrategyV1StableVariable)[-1]  
+    if address == '':
+        dyn = _chain.contracts.get_deployments(_project.StrategyV1StableVariable)[-1]
+    else:
+        dyn = _project.StrategyV1StableVariable.at(address)
     
     # Check if account has strategist role
     if dyn.strategists(account) == False:
@@ -236,7 +255,7 @@ def strategist(context, account, action, gasprice, gaslimit):
         raise click.Abort()
 
     if action == 'DEPLOY_IDLE':
-        print('Previous idle balance: {}\n'.format(dyn.getIdleBalance()))
+        print('Current idle balance: {}\n'.format(dyn.getIdleBalance()))
         dyn.deployIdle(sender=account, gas_limit=gaslimit, gas_price=gasprice)
         print('\nUpdated idle balance: {}'.format(dyn.getIdleBalance()))
     
@@ -244,10 +263,11 @@ def strategist(context, account, action, gasprice, gaslimit):
         _previous_bal = dyn.totalBalance()
         _cr = dyn.getCollateralRatio()
         _maxcr = dyn.maxCollatRatio()
-        if _cr < _maxcr:
-            print('\nCurrent CR {:0.4f} less than MAX CR {:0.4f}'.format(_cr, _maxcr))
+        _mincr = dyn.minCollatRatio()
+        if _cr < _maxcr and _cr > _mincr:
+            print('\nCurrent CR {:0.4f} less than MAX CR {:0.4f} and greater than MIN CR {:0.4f}'.format(_cr, _maxcr, _mincr))
             raise click.Abort()
-        print('Previous collateral ratio: {:0.4f}\n'.format(_cr))
+        print('Current collateral ratio: {:0.4f}\n'.format(_cr))
         dyn.rebalance_collateral(sender=account, gas_limit=gaslimit, gas_price=gasprice)
         _updated_bal = dyn.totalBalance()
         print('\nUpdated collateral ratio: {:0.4f}'.format(dyn.getCollateralRatio()))    
@@ -255,7 +275,7 @@ def strategist(context, account, action, gasprice, gaslimit):
 
     elif action == 'HARVEST':
         _previous_bal = dyn.totalBalance()
-        print('Previous total balance: {}\n'.format(_previous_bal))
+        print('Current total balance: {}\n'.format(_previous_bal))
         dyn.harvest(sender=account, gas_limit=gaslimit, gas_price=gasprice)
         _updated_bal = dyn.totalBalance()
         print('\nUpdated total balance: {}'.format(_updated_bal))      
@@ -263,33 +283,49 @@ def strategist(context, account, action, gasprice, gaslimit):
         
     elif action == 'REBALANCE_EXPOSURE':
         _previous_bal = dyn.totalBalance()
-        print('Previous price exposure: {:0.4f}\n'.format(dyn.priceExposure()))
-        value = click.prompt('Enter new exposure', type=float)
-        dyn.rebalance_exposure(round(Decimal(value), 4), sender=account, gas_limit=gaslimit, gas_price=gasprice)
+        _e = dyn.getExposure()
+        _te = dyn.targetExposure(), 
+        _ethresh = dyn.exposureThresh()
+        if _ethresh < abs(_e - _te):
+            print('\nExposure threshold {:0.4f} more than exposure absolute difference {:0.4f}'.format(_ethresh, abs(_e - _te)))
+            raise click.Abort()
+        print('Target exposure: {:0.4f} , Exposure threshold: {:0.4f}'.format(_te, _ethresh))
+        print('Current exposure: {:0.4f}\n'.format(_e))
+        dyn.rebalance_exposure(sender=account, gas_limit=gaslimit, gas_price=gasprice)
         _updated_bal = dyn.totalBalance()
-        print('\nUpdated price exposure: {:0.4f}'.format(dyn.priceExposure()))
+        print('\nUpdated exposure: {:0.4f}'.format(dyn.getExposure()))
         print('Rebalance loss: {:0.4f}%'.format(100*(_previous_bal-_updated_bal)/_previous_bal))
         
+    elif action == 'UPDATE_EXPOSURE':
+        _previous_bal = dyn.totalBalance()
+        print('Current target exposure: {:0.4f} , Current exposure: {:0.4f}\n'.format(dyn.targetExposure(), dyn.getExposure()))
+        value = click.prompt('Enter new exposure', type=float)
+        dyn.update_exposure(round(Decimal(value), 4), sender=account, gas_limit=gaslimit, gas_price=gasprice)
+        _updated_bal = dyn.totalBalance()
+        print('\nUpdated target exposure: {:0.4f} , Updated exposure: {:0.4f}'.format(dyn.targetExposure(), dyn.getExposure()))
+        print('Exposure update loss: {:0.4f}%'.format(100*(_previous_bal-_updated_bal)/_previous_bal))
+        
     elif action == 'SET_TARGET_CR':
-        print('Previous target cr: {:0.4f}\n'.format(dyn.targetCollatRatio()))
+        print('Current target cr: {:0.4f}\n'.format(dyn.targetCollatRatio()))
         value = click.prompt('Enter new target cr', type=float)
         dyn.set_target_collat_ratio(round(Decimal(value), 4), sender=account, gas_limit=gaslimit, gas_price=gasprice)
         print('\nUpdated target cr: {:0.4f}'.format(dyn.targetCollatRatio()))
     
-    elif action == 'SET_MAX_CR':
-        print('Previous max cr: {:0.4f}\n'.format(dyn.maxCollatRatio()))
-        value = click.prompt('Enter new max cr', type=float)
-        dyn.set_max_collat_ratio(round(Decimal(value), 4), sender=account, gas_limit=gaslimit, gas_price=gasprice)
-        print('\nUpdated max cr: {:0.4f}'.format(dyn.maxCollatRatio()))  
+    elif action == 'SET_CR_RANGE':
+        print('Current min cr: {:0.4f} , Current max cr: {:0.4f}\n'.format(dyn.minCollatRatio(), dyn.maxCollatRatio()))
+        min_value = click.prompt('Enter new min cr', type=float)
+        max_value = click.prompt('Enter new max cr', type=float)
+        dyn.set_collat_ratio_range(round(Decimal(min_value), 4), round(Decimal(max_value), 4), sender=account, gas_limit=gaslimit, gas_price=gasprice)
+        print('Updated min cr: {:0.4f} , Updated max cr: {:0.4f}\n'.format(dyn.minCollatRatio(), dyn.maxCollatRatio()))
         
-    elif action == 'SET_EXPOSURE':
-        print('Previous price exposure: {:0.4f}\n'.format(dyn.priceExposure()))
-        value = click.prompt('Enter new exposure', type=float)
-        dyn.set_exposure(round(Decimal(value), 4), sender=account, gas_limit=gaslimit, gas_price=gasprice)
-        print('\nUpdated price exposure: {:0.4f}'.format(dyn.priceExposure()))
+    elif action == 'SET_EXPOSURE_THRESHOLD':
+        print('Current exposure threshold: {:0.4f}\n'.format(dyn.exposureThresh()))
+        value = click.prompt('Enter new exposure threshold', type=float)
+        dyn.set_exposure_threshold(round(Decimal(value), 4), sender=account, gas_limit=gaslimit, gas_price=gasprice)
+        print('\nUpdated exposure threshold: {:0.4f}'.format(dyn.exposureThresh()))
         
     elif action == 'SET_SLIPPAGE':
-        print('Previous slippage: {}\n'.format(dyn.slippage()))
+        print('Current slippage: {}\n'.format(dyn.slippage()))
         value = click.prompt('Enter new exposure (must be b/w 9000 and 10000)', type=int)
         dyn.set_slippage(value, sender=account, gas_limit=gaslimit, gas_price=gasprice)
         print('\nUpdated slippage: {}'.format(dyn.slippage()))    
@@ -305,12 +341,16 @@ action_choices = ['SET_OWNER','SET_STRATEGIST','SET_KEEPER','SET_MAX_ALLOWED_CR'
 @ape_cli_context()
 @account_option()
 @click.option('-a', '--action', prompt='Choose Action', type=click.Choice(action_choices, case_sensitive=False), cls=QuestionaryOption)
+@click.option('-address', type=click.STRING, default='')
 @gasprice_option()
 @gaslimit_option()
-def owner(context, account, action, gasprice, gaslimit):
+def owner(context, account, action, address, gasprice, gaslimit):
     _project = context.project_manager
     _chain = context.chain_manager 
-    dyn = _chain.contracts.get_deployments(_project.StrategyV1StableVariable)[-1]  
+    if address == '':
+        dyn = _chain.contracts.get_deployments(_project.StrategyV1StableVariable)[-1]
+    else:
+        dyn = _project.StrategyV1StableVariable.at(address) 
     
     # Check if account is owner
     if dyn.owner() != account:

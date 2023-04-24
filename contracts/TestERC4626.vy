@@ -250,3 +250,4 @@ def redeem(shares: uint256, receiver: address=msg.sender, owner: address=msg.sen
 def DEBUG_steal_tokens(amount: uint256):
     # NOTE: This is the primary method of mocking share price changes
     self.asset.transfer(msg.sender, amount)
+

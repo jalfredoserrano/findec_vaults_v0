@@ -1,4 +1,4 @@
-from ape import accounts, project
+from ape import accounts, project, chain
 from decimal import Decimal
 from web3 import Web3, constants
 
@@ -39,11 +39,13 @@ Strategy Params
 """
 strat_name = "ftm-dai-0"
 tcr = Decimal('0.6')
+mincr = Decimal('0.45')
 maxcr =  Decimal('0.65')
 maxallowedcr = Decimal('0.8')
 exposure = Decimal('0.0')
 maxshortexposure = Decimal('-0.25')
 maxlongexposure = Decimal('0.25')
+ethresh = Decimal('0.05')
 
 """
 Tokens
@@ -67,18 +69,18 @@ poolid = dai_poolid
 def main():
     # Deploy vault
     vlt = project.ERC4626DynamicHedgingVault.deploy(dai, sender=dev, gas_limit=gas_limit, gas_price=gas_price) 
-    #vlt = project.ERC4626DynamicHedgingVault.at('0x1459C08dA130f3Bf62d8ED56148829e3a2DF9E13')
+    #vlt = chain.contracts.get_deployments(project.ERC4626DynamicHedgingVault)[-1]
     
     # Deploy lending vault
     lending_vlt = project.ERC4626LendingVault.deploy(wftm, sender=dev, gas_limit=gas_limit, gas_price=gas_price)
-    #lending_vlt = project.ERC4626LendingVault.at('0x7B1AFe65FA8703523147334A5466CB0891504030')
+    #lending_vlt = chain.contracts.get_deployments(project.ERC4626LendingVault)[-1]
     
     # Deploy Strategy
     vault = vlt.address
     lendingvault = lending_vlt.address
-    dyn = project.StrategyV1StableVariable.deploy(strat_name, vault, lendingvault, stable_token, variable_token, a_token, debt_token, rewardtoken, tcr, 
-                                           maxcr, maxallowedcr, exposure, maxshortexposure, maxlongexposure, sender=dev, gas_limit=gas_limit, gas_price=gas_price)
-    #dyn = project.StrategyV1StableVariable.at('0xa82B0bf9DA5a9C17cF5622222Dc44652D5501689')
+    dyn = project.StrategyV1StableVariable.deploy(strat_name, vault, lendingvault, stable_token, variable_token, a_token, debt_token, rewardtoken, tcr, mincr,
+                                           maxcr, maxallowedcr, exposure, ethresh, maxshortexposure, maxlongexposure, 
+                                           sender=dev, gas_limit=gas_limit, gas_price=gas_price)
     
     # Approve tokens
     daiERC = project.ERC20.at(dai)
