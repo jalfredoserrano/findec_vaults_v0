@@ -34,7 +34,7 @@ Users interact with the vault contracts. Only approved addresses (strategists, k
 Each vault has an underlying asset, which is one of the assets used by the startegy contract. 
 
 There are 2 types of vaults:
-- Dynamic hedging vaults: lp hedgeding (underlying is stable token)
+- Dynamic hedging vaults: lp hedging (underlying is stable token)
 - Lending vaults: single sided lending (underlying is variable token)
 
 ## Strategy contract
