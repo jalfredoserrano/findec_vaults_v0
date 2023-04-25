@@ -44,7 +44,7 @@ Contains logic defined in the jupyter notebook. Contract has access control so o
   - Rebalance collateral ratio
   - Rebalance exposure
   - Harvest
- - Strategist
+- Strategist
   - same access as keepers
   - Update target collateral ratio
   - Update min and max collateral ratio
