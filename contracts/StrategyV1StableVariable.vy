@@ -454,7 +454,7 @@ def withdraw(_assets: uint256):
         Withdraw
     """
     assert self.initialized == True, "!initialized"
-    assert self.vault == msg.sender or self.owner == msg.sender, "!vault"
+    assert self.vault == msg.sender, "!vault"
     
     # Define key variables
     _remaining_to_withdraw: uint256 = 0
@@ -1214,8 +1214,7 @@ def set_slippage(_slippage: uint256):
 @external
 def sweep(_token: address, _qty: uint256, _to: address):
     assert msg.sender == self.owner, "!owner"
-    #assert _token not in [self.stableToken, self.variableToken, self.rewardToken, self.lpToken], "can't sweep underlying assets"
-    #assert  self.secondaryTokens[_token] == False, "can't sweep secondary collateral"
+    assert _token not in [self.stableToken, self.variableToken, self.rewardToken, self.lpToken, self.secondaryToken, self.secondaryaToken], "can't sweep underlying assets"
     IERC20(_token).transfer(_to, _qty)
 
 @external
