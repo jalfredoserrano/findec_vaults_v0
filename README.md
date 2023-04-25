@@ -3,8 +3,8 @@ DeFi vaults beta version
 
 ## Overview
 
-Findec v0 vaults are smart contracts design to managed a hedged lp position. In our v0 vaults, shorting is performed using lending and borrowing protocols.
-The key difference between these and other hedged lp vaults in DeFi, is that findec v0 vaults allows the user to have directional exposure to price action.
+Findec v0 vaults are smart contracts design to manage a hedged lp position. In our v0 vaults, shorting is performed using lending and borrowing protocols.
+The key difference with other hedged lp vaults in DeFi. Is that findec v0 vaults allows the user to have directional exposure to price action. 
 
 In simple terms, the strategy does the following: 
 - Lend a stable token
@@ -22,7 +22,7 @@ We use Apeworkx and vyper as the framework and smart contract language
 ## Repo Structure
 
 Besides apeworkx functionality, repo contains 2 other folders.
-- cli: python click app to interact either as user or strategist with smart contracts
+- cli: python click app to interact either as user strategist or owner with smart contracts
 - analysis: scripts containing detailed analysis and explanations of dynamic hedging strategy
 
 ## Smart Contracts Design
@@ -31,7 +31,7 @@ There are 3 smart contracts that handle all logic related to a specific startegy
 strategy contract. Vaults contain the accounting logic while the strategy contract contains the lp hedging logic.
 
 Users interact with the vault contracts. Only approved addresses (strategists, keepers and owner) can interact with the strategy contract. 
-Each vault has an underlying asset, which represent the stable and variable token controlled by the strategy contract. 
+Each vault has an underlying asset, which is one of the assets used by the startegy contract. 
 
 There are 2 types of vaults:
 - Dynamic hedging vaults: lp hedgeding (underlying is stable token)
@@ -68,8 +68,8 @@ Both vaults interact the same strategy smart contract.
 
 **Dynamic Hedging vault**
 - Accounting logic based on dynamic hedging strategy valuations (uses both stable and variable token)
-- Users are charged a performance fee on all deposits and withdrawals (except on first deposit)
-- Performance fee is only charged if returns are positive during the investing time period
+- Users are charged a performance fee on all deposits and withdrawals (except when no current deposits exist)
+- Performance fee is only charged if returns are positive during the investment time period
 - A small deposit fee (0.1%) is charged during all deposits, this is divided between all users in the pool
 - 10% of farming rewards are paid as fees
 - 5% to single sided lending users
