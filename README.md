@@ -27,7 +27,7 @@ Besides apeworkx functionality, repo contains 2 other folders.
 
 ## Smart Contracts Design
 
-There are 3 smart contracts that handle all logic related to a specific startegy. 2 of them are ERC4626 compliant vault contracts, and the other one is the 
+There are 3 smart contracts that handle all logic related to a specific strategy. 2 of them are ERC4626 compliant vault contracts, and the other one is the 
 strategy contract. Vaults contain the accounting logic while the strategy contract contains the lp hedging logic.
 
 Users interact with the vault contracts. Only approved addresses (strategists, keepers and owner) can interact with the strategy contract. 
